@@ -172,10 +172,10 @@ CORS(app)
 
 #     return jsonify({"message": "Event added successfully & emails sent!"})
 
-@app.route("/send_mail", methods=["POST","GET"])
+@app.route("/send_mail", methods=["POST", "GET"])
 def send_mail():
     """Fetch users with expiring subscriptions and send email notifications."""
-    conn = fetch_data_from_db.get_connection("timesheet")
+    conn = fetch_data_from_db.get_connection()
     cursor = conn.cursor()
 
     query = """
@@ -185,7 +185,9 @@ def send_mail():
     
     cursor.execute(query)
     rows = cursor.fetchall()
-    fetch_data_from_db.release_connection("mydatabase", conn)
+    
+    # ✅ Properly release connection
+    fetch_data_from_db.release_connection(conn)
 
     today = date.today()
     email_list = []
