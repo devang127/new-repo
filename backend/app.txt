@@ -1,0 +1,180 @@
+import os
+import base64
+import json
+import datetime
+from flask import app
+from pymongo import MongoClient
+from googleapiclient.discovery import build
+from google.oauth2 import service_account
+from dotenv import load_dotenv
+from datetime import datetime, timedelta
+from smtplib import SMTP
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+
+# ✅ Load environment variables from .env file
+load_dotenv()
+
+# ✅ Email Configuration
+EMAIL_HOST = os.getenv("EMAIL_HOST")
+EMAIL_PORT = int(os.getenv("EMAIL_PORT", 587))  # Default to 587 if not set
+EMAIL_USER = os.getenv("EMAIL_USER")
+EMAIL_PASS = os.getenv("EMAIL_PASS")
+
+# ✅ Function to Send Emails
+def send_email(subject, body, recipient):
+    """
+    Sends an email notification to the recipient.
+    """
+    try:
+        msg = MIMEMultipart()
+        msg["From"] = EMAIL_USER
+        msg["To"] = recipient
+        msg["Subject"] = subject
+        msg.attach(MIMEText(body, "html"))
+
+        with SMTP(EMAIL_HOST, EMAIL_PORT) as server:
+            server.starttls()
+            server.login(EMAIL_USER, EMAIL_PASS)
+            server.sendmail(EMAIL_USER, recipient, msg.as_string())
+            print(f"✅ Email sent to {recipient}")
+
+    except Exception as e:
+        print(f"❌ Email sending failed: {e}")
+
+# ✅ Function to Authenticate Google Calendar API
+def get_calendar_service():
+    """
+    Authenticate and return the Google Calendar service.
+    """
+    SERVICE_ACCOUNT_JSON_BASE64 = os.getenv("GOOGLE_CREDENTIALS_JSON_BASE64")
+
+    if not SERVICE_ACCOUNT_JSON_BASE64:
+        raise Exception("❌ Google credentials not found in environment variables. Make sure your .env file is loaded!")
+
+    try:
+        decoded_credentials = base64.b64decode(SERVICE_ACCOUNT_JSON_BASE64).decode("utf-8")
+        creds_dict = json.loads(decoded_credentials)
+    except Exception as e:
+        raise Exception("❌ Error decoding Google credentials. Ensure your Base64 string is correct.") from e
+
+    SCOPES = ["https://www.googleapis.com/auth/calendar"]
+    creds = service_account.Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
+
+    print("✅ Google Cloud Project ID:", creds.project_id)
+    
+    return build("calendar", "v3", credentials=creds)
+
+# ✅ MongoDB Connection
+MONGO_URI = "mongodb+srv://devangsawant127:dev9930@cluster0.ow3la.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"  
+client = MongoClient(MONGO_URI)
+db = client["events_db"]  
+events_collection = db["events"]  
+
+# ✅ Insert Events
+events = [
+    {
+        "name": "Meeting",
+        "event_date": "2025-02-27",  # YYYY-MM-DD format
+        "email": "devangsawant98@gmail.com"  # Change this to the user's actual email
+    },
+    {
+        "name": "User's Anniversary at the Company",
+        "event_date": "2025-02-27",
+        "email": "devangsawant98@gmail.com"  # Change this to the user's actual email
+    }
+]
+
+# ✅ Insert events into MongoDB
+events_collection.insert_many(events)
+print("✅ Events inserted successfully into MongoDB!")
+# ✅ Google Calendar ID
+CALENDAR_ID = os.getenv("GOOGLE_CALENDAR_ID")
+
+# ✅ Function to Add an Event
+
+@app.route('/add_event', methods=['POST'])
+def add_event(event_name, event_date):
+    """
+    Add an event to Google Calendar with a recurrence limit of 12 months.
+    """
+    service = get_calendar_service()
+
+    # ✅ Check if the event already exists
+    events_result = service.events().list(
+        calendarId=CALENDAR_ID,
+        q=event_name,  
+        singleEvents=True
+    ).execute()
+
+    events = events_result.get("items", [])
+
+    if events:
+        print(f"⚠️ Event already exists for {event_name} on {event_date}")
+        return  
+
+    # ✅ Create new event
+
+    event = {
+        "summary": f"{event_name} 📅",
+        "description": f"Reminder: {event_name} is happening today!",
+        "start": {"date": event_date},
+        "end": {"date": event_date},
+        "visibility": "public",
+    }
+
+    service.events().insert(calendarId=CALENDAR_ID, body=event).execute()
+    print(f"✅ Event added: {event_name} on {event_date}")
+
+# ✅ Function to Sync MongoDB Events with Google Calendar
+def sync_events():
+    """
+    Sync all events from MongoDB to Google Calendar.
+    """
+    events = list(events_collection.find())  
+
+    print(f"✅ Found {len(events)} events in MongoDB")
+
+    for event in events:
+        event_date = event.get("event_date")  
+        if event_date:
+            if isinstance(event_date, datetime):  # ✅ Fixed the issue
+                event_date = event_date.strftime("%Y-%m-%d")
+
+            print(f"📅 Adding event: {event['name']} (Date: {event_date})")
+            add_event(event["name"], event_date)
+
+    print("✅ All events synced to Google Calendar!")
+
+
+# ✅ Function to Notify Users About Today's Events
+def notify_today_events():
+    """
+    Check MongoDB for events that match today's date and notify users.
+    """
+    today = datetime.now().strftime("%m-%d")  # Format as MM-DD
+    events = list(events_collection.find())
+
+    for event in events:
+        event_date = event.get("event_date")
+        email = event.get("email")  # Assuming email is stored in DB
+
+        if event_date:
+            if isinstance(event_date, datetime):  
+                event_date = event_date.strftime("%Y-%m-%d")
+
+            event_month_day = event_date[5:]  # Extract MM-DD part
+
+            if event_month_day == today:
+                print(f"📢 Sending email notification for event: {event['name']}")
+                subject = f"📅 Reminder: {event['name']} is Today!"
+                body = f"""
+                <h2>Hey there! 📢</h2>
+                <p>Don't forget about the event: <b>{event['name']}</b> happening today. 🎉</p>
+                """
+                send_email(subject, body, email)
+
+# ✅ Run the Sync & Notification Function
+if __name__ == "__main__":
+    sync_events()  
+    notify_today_events()  # Notify users daily
